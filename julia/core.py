@@ -234,12 +234,13 @@ class Julia(object):
                     [runtime, "-e",
                      """
                      println(JULIA_HOME)
-                     println(Sys.dlpath(dlopen(\"libjulia\")))
+                     println(Libdl.dlpath(Libdl.dlopen(\"libjulia\")))
                      """])
                 JULIA_HOME, libjulia_path = juliainfo.decode("utf-8").rstrip().split("\n")
                 libjulia_dir = os.path.dirname(libjulia_path)
-                sysimg_relpath = os.path.join(os.path.relpath(libjulia_dir, JULIA_HOME), "sys.ji")
-                sysimg_relpath_alt = os.path.join(os.path.relpath(libjulia_dir, JULIA_HOME), 'julia',"sys.ji")
+                print libjulia_dir
+                sysimg_relpath = os.path.join(os.path.relpath(libjulia_dir, JULIA_HOME), "sys.so")
+                sysimg_relpath_alt = os.path.join(os.path.relpath(libjulia_dir, JULIA_HOME), 'julia',"sys.so")
             except:
                 raise JuliaError('error starting up the Julia process')
 
@@ -249,21 +250,22 @@ class Julia(object):
                 if os.path.exists(os.path.join(JULIA_HOME, sysimg_relpath_alt)):
                     sysimg_relpath = sysimg_relpath_alt
                 else:
-                    raise JuliaError("Julia sysimage (\"sys.ji\") not found! {}".format(sysimg_relpath))
-
+                    raise JuliaError("Julia sysimage (\"sys.so\") not found! {}".format(sysimg_relpath))
+            
             self.api = ctypes.PyDLL(libjulia_path, ctypes.RTLD_GLOBAL)
             self.api.jl_init_with_image.arg_types = [char_p, char_p]
             self.api.jl_init_with_image(JULIA_HOME.encode("utf-8"),
                                         sysimg_relpath.encode("utf-8"))
-        else:
-            # we're assuming here we're fully inside a running Julia process,
-            # so we're fishing for symbols in our own process table
-            self.api = ctypes.PyDLL('')
+        # else:
+        #     # we're assuming here we're fully inside a running Julia process,
+        #     # so we're fishing for symbols in our own process table
+        #     self.api = ctypes.PyDLL('')
 
         # Store the running interpreter reference so we can start using it via self.call
         self.api.jl_.argtypes = [void_p]
         self.api.jl_.restype = None
 
+        
         # Set the return types of some of the bridge functions in ctypes terminology
         self.api.jl_eval_string.argtypes = [char_p]
         self.api.jl_eval_string.restype = void_p
@@ -271,8 +273,15 @@ class Julia(object):
         self.api.jl_exception_occurred.restype = void_p
         self.api.jl_typeof_str.argtypes = [void_p]
         self.api.jl_typeof_str.restype = char_p
+        
+        self.api.jl_call1.argtypes = [void_p, void_p]
         self.api.jl_call1.restype = void_p
+        
         self.api.jl_get_field.restype = void_p
+        
+        self.api.jl_get_global.restype = void_p
+        self.api.jl_symbol.restype = void_p
+        
         self.api.jl_typename_str.restype = char_p
         self.api.jl_typeof_str.restype = char_p
         self.api.jl_unbox_voidpointer.restype = py_object
@@ -286,7 +295,8 @@ class Julia(object):
                     "Install PyCall by running the following line:\n"
                     """\tjulia -e 'Pkg.add("PyCall"); Pkg.update()'\n""")
             try:
-                self.call('pyinitialize(C_NULL)')
+                #self.call('pyinitialize(C_NULL)')
+                pass
             except:
                 raise JuliaError("Failed to initialize PyCall package")
 
@@ -336,7 +346,7 @@ class Julia(object):
         catch ex
             sprint(showerror, ex, catch_backtrace())
         end""".encode('utf-8'))
-        return char_p(msg).value.decode("utf-8")
+        return char_p(msg).value.decode("latin-1")
 
     def _typeof_julia_exception_in_transit(self):
         exception = void_p.in_dll(self.api, 'jl_exception_in_transit')
@@ -353,10 +363,14 @@ class Julia(object):
         """ Execute code in Julia, then pull some results back to Python. """
         if src is None:
             return None
-        ans = self.call(src)
-        res = self.api.jl_call1(void_p(self.api.PyObject), void_p(ans))
+        #ans = self.call(src)
+        # print self.api.jl_symbol("PyObject")
+        # print self.api.jl_get_global(self.api.jl_main_module, self.api.jl_symbol("PyObject"))
+        # res = self.api.jl_call1(void_p(self.api.PyObject), void_p(ans))
+        res = self.api.jl_eval_string('PyObject({})'.format(src))
         if not res:
             #TODO: introspect the julia error object here
+            print self._capture_showerror_for_last_julia_exception()
             raise JuliaError("ErrorException in Julia PyObject: "
                              "{}".format(src))
         boxed_obj = self.api.jl_get_field(void_p(res), b'o')
